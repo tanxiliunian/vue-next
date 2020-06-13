@@ -3,24 +3,22 @@ import { patchStyle } from './modules/style'
 import { patchAttr } from './modules/attrs'
 import { patchDOMProp } from './modules/props'
 import { patchEvent } from './modules/events'
-import { isOn } from '@vue/shared'
-import {
-  VNode,
-  ComponentInternalInstance,
-  SuspenseBoundary
-} from '@vue/runtime-core'
+import { isOn, isString, isFunction } from '@vue/shared'
+import { RendererOptions } from '@vue/runtime-core'
 
-export function patchProp(
-  el: Element,
-  key: string,
-  nextValue: any,
-  prevValue: any,
-  isSVG: boolean,
-  prevChildren?: VNode[],
-  parentComponent?: ComponentInternalInstance,
-  parentSuspense?: SuspenseBoundary<Node, Element>,
-  unmountChildren?: any
-) {
+const nativeOnRE = /^on[a-z]/
+
+export const patchProp: RendererOptions<Node, Element>['patchProp'] = (
+  el,
+  key,
+  prevValue,
+  nextValue,
+  isSVG = false,
+  prevChildren,
+  parentComponent,
+  parentSuspense,
+  unmountChildren
+) => {
   switch (key) {
     // special
     case 'class':
@@ -31,14 +29,30 @@ export function patchProp(
       break
     default:
       if (isOn(key)) {
-        patchEvent(
-          el,
-          key.slice(2).toLowerCase(),
-          prevValue,
-          nextValue,
-          parentComponent
-        )
-      } else if (!isSVG && key in el) {
+        // ignore v-model listeners
+        if (!key.startsWith('onUpdate:')) {
+          patchEvent(el, key, prevValue, nextValue, parentComponent)
+        }
+      } else if (
+        // spellcheck and draggable are numerated attrs, however their
+        // corresponding DOM properties are actually booleans - this leads to
+        // setting it with a string "false" value leading it to be coerced to
+        // `true`, so we need to always treat them as attributes.
+        // Note that `contentEditable` doesn't have this problem: its DOM
+        // property is also enumerated string values.
+        key !== 'spellcheck' &&
+        key !== 'draggable' &&
+        (isSVG
+          ? // most keys must be set as attribute on svg elements to work
+            // ...except innerHTML
+            key === 'innerHTML' ||
+            // or native onclick with function values
+            (key in el && nativeOnRE.test(key) && isFunction(nextValue))
+          : // for normal html elements, set as a property if it exists
+            key in el &&
+            // except native onclick with string values
+            !(nativeOnRE.test(key) && isString(nextValue)))
+      ) {
         patchDOMProp(
           el,
           key,
@@ -49,6 +63,15 @@ export function patchProp(
           unmountChildren
         )
       } else {
+        // special case for <input v-model type="checkbox"> with
+        // :true-value & :false-value
+        // store value as dom properties since non-string values will be
+        // stringified.
+        if (key === 'true-value') {
+          ;(el as any)._trueValue = nextValue
+        } else if (key === 'false-value') {
+          ;(el as any)._falseValue = nextValue
+        }
         patchAttr(el, key, nextValue, isSVG)
       }
       break
